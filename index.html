@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>English Up</title>
+  <meta name="description" content="Practise English vocabulary, listening and speaking.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#home">English<span>Up</span></a>
+    <nav class="tabs">
+      <a href="#home" data-route="home">Home</a>
+      <a href="#vocab" data-route="vocab">Vocabulary</a>
+      <a href="#listening" data-route="listening">Listening</a>
+      <a href="#speaking" data-route="speaking">Speaking</a>
+    </nav>
+  </header>
+
+  <main id="app"></main>
+
+  <footer class="foot">
+    Voice:
+    <select id="voiceSelect" aria-label="Voice"></select>
+    <span class="muted">Works best in Chrome or Edge (speaking needs a microphone).</span>
+  </footer>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
