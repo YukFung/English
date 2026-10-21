@@ -13,7 +13,13 @@ const DAY = 24 * 60 * 60 * 1000;
 const INTERVALS = [0, 1, 2, 4, 7, 15, 30];
 
 function loadState() {
-  const empty = { cards: {}, days: [], stats: { reviews: 0, quiz: 0, quizRight: 0, listen: 0, speak: 0 }, voice: "" };
+  const empty = {
+    cards: {}, days: [], voice: "",
+    stats: { reviews: 0, quiz: 0, quizRight: 0, listen: 0, speak: 0, lessons: 0 },
+    xp: {},    // date -> XP earned that day
+    goal: 30,  // daily XP goal
+    done: {},  // lesson id -> best score (%)
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY));
     return saved ? { ...empty, ...saved, stats: { ...empty.stats, ...saved.stats } } : empty;
@@ -27,9 +33,11 @@ function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* private mode etc. */ }
 }
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+// Local date as YYYY-MM-DD (toISOString would use UTC, so Hong Kong days would start at 8 a.m.).
+function dateKey(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+const todayKey = () => dateKey();
 
 function markActive() {
   const t = todayKey();
@@ -41,12 +49,42 @@ function streak() {
   let count = 0;
   const d = new Date();
   // Today doesn't break the streak if you haven't practised yet.
-  if (!state.days.includes(d.toISOString().slice(0, 10))) d.setDate(d.getDate() - 1);
-  while (state.days.includes(d.toISOString().slice(0, 10))) {
+  if (!state.days.includes(dateKey(d))) d.setDate(d.getDate() - 1);
+  while (state.days.includes(dateKey(d))) {
     count++;
     d.setDate(d.getDate() - 1);
   }
   return count;
+}
+
+/* ================= XP & daily goal (Duolingo-style) ================= */
+
+const todayXP = () => state.xp[todayKey()] || 0;
+const totalXP = () => Object.values(state.xp).reduce((a, b) => a + b, 0);
+
+function addXP(n) {
+  const before = todayXP();
+  state.xp[todayKey()] = before + n;
+  if (lesson) lesson.xp += n;
+  markActive();
+  updateHud();
+  if (before < state.goal && before + n >= state.goal) toast(`🎯 Daily goal reached! ${state.goal} XP today`, 3000);
+  else toast(`+${n} XP`);
+}
+
+function updateHud() {
+  document.getElementById("hudStreak").textContent = `🔥 ${streak()}`;
+  document.getElementById("hudXP").textContent = `⚡ ${todayXP()}/${state.goal} XP`;
+  document.getElementById("hudXP").classList.toggle("met", todayXP() >= state.goal);
+}
+
+let toastTimer;
+function toast(text, ms = 1200) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), ms);
 }
 
 /* ================= Helpers ================= */
@@ -61,6 +99,12 @@ const shuffle = (arr) => {
 };
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Example sentences mark the target word as [word].
+const plain = (s) => s.replace(/[[\]]/g, "");
+const blankAnswer = (s) => s.match(/\[(.+?)\]/)[1];
+const withBlank = (s) => esc(s).replace(/\[(.+?)\]/, '<span class="blank"></span>');
+const withBold = (s) => esc(s).replace(/\[(.+?)\]/, "<b>$1</b>");
 
 function segmented(options, current, onPick) {
   const wrap = document.createElement("div");
@@ -208,6 +252,7 @@ function route() {
   document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.route === name));
   if ("speechSynthesis" in window) speechSynthesis.cancel();
   (routes[name] || renderHome)();
+  updateHud();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);
@@ -217,22 +262,59 @@ window.addEventListener("hashchange", route);
 function renderHome() {
   const learned = Object.values(state.cards).filter((c) => c.box >= 2).length;
   const due = dueCards("All").length;
-  const s = state.stats;
-  app.innerHTML = `
-    <h1>Hi there 👋</h1>
-    <p class="muted">A little practice every day beats a lot once a week. Aim for 15 minutes.</p>
+  const next = nextLesson();
+  const xp = todayXP();
+  const goalPct = Math.min(100, (xp / state.goal) * 100);
 
-    <div class="grid">
-      <div class="card stat"><b>${streak()}</b>day streak 🔥</div>
-      <div class="card stat"><b>${learned}/${VOCAB.length}</b>words learned</div>
-      <div class="card stat"><b>${s.listen}</b>sentences heard</div>
-      <div class="card stat"><b>${s.speak}</b>sentences spoken</div>
+  // Last 7 days: full circle = goal met, half = some practice.
+  const week = Array.from({ length: 7 }, (_, k) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - k));
+    const dx = state.xp[dateKey(d)] || 0;
+    return { label: "SMTWTFS"[d.getDay()], xp: dx, cls: dx >= state.goal ? "full" : dx > 0 ? "half" : "", today: k === 6 };
+  });
+
+  app.innerHTML = `
+    <h1>${xp >= state.goal ? "Daily goal done! 🎉" : xp > 0 ? "Keep going! 💪" : "Ready to practise? 👋"}</h1>
+    <p class="muted">A little practice every day adds up. Finish your daily goal to keep your streak alive.</p>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>⚡ Daily goal</b>
+        <select id="goalSelect" aria-label="Daily goal">
+          ${[[10, "Casual"], [30, "Regular"], [50, "Serious"], [100, "Intense"]].map(([g, name]) =>
+            `<option value="${g}" ${g === state.goal ? "selected" : ""}>${name} · ${g} XP/day</option>`).join("")}
+        </select>
+      </div>
+      <div class="goal-bar"><div style="width:${goalPct}%"></div><span>${xp} / ${state.goal} XP</span></div>
+      <div class="week">
+        ${week.map((d) => `
+          <div class="day ${d.today ? "today" : ""}" title="${d.xp} XP">
+            <div class="dot ${d.cls}">${d.cls === "full" ? "✓" : ""}</div>${d.label}
+          </div>`).join("")}
+      </div>
     </div>
 
-    <h2>Today's plan</h2>
+    ${next ? `
+      <a class="card module continue" href="#vocab" id="continueLesson">
+        <div class="muted">Continue learning</div>
+        <div style="font-size:1.2rem"><b>Unit ${next.unit} · ${esc(next.topic)} · Lesson ${next.n}</b></div>
+        <div class="muted">${next.words.slice(0, 5).map((w) => esc(w.word)).join(", ")}…</div>
+        <span class="btn primary big" style="margin-top:12px;display:inline-block">▶ Start lesson</span>
+      </a>` : `
+      <div class="card"><b>🏆 You finished every lesson!</b> <span class="muted">Keep your streak with a review lesson.</span></div>`}
+
     <div class="grid">
-      <a class="card module" href="#vocab">
-        <div class="icon">📚</div><b>Vocabulary</b>
+      <div class="card stat"><b>🔥 ${streak()}</b>day streak</div>
+      <div class="card stat"><b>${totalXP()}</b>total XP</div>
+      <div class="card stat"><b>${learned}/${VOCAB.length}</b>words learned</div>
+      <div class="card stat"><b>${Object.keys(state.done).length}/${ALL_LESSONS.length}</b>lessons done</div>
+    </div>
+
+    <h2>More practice</h2>
+    <div class="grid">
+      <a class="card module" href="#vocab" id="toCards">
+        <div class="icon">📚</div><b>Flashcards</b>
         <div class="muted">${due} card${due === 1 ? "" : "s"} to review</div>
       </a>
       <a class="card module" href="#listening">
@@ -245,20 +327,23 @@ function renderHome() {
       </a>
     </div>
 
-    <h2>How to use this site</h2>
+    <h2>How you earn XP</h2>
     <div class="card">
-      <ol style="margin:0;padding-left:20px">
-        <li><b>Vocabulary:</b> review flashcards. Press <i>Again</i> if you forgot, <i>Good</i> if you remembered.
-          Words you know come back less often (spaced repetition).</li>
-        <li><b>Listening:</b> listen to a sentence and type what you hear. Use 🐢 slow mode if it's too fast.</li>
-        <li><b>Speaking:</b> listen first, then press 🎤 and copy it (shadowing). The site shows which words it understood.</li>
-      </ol>
+      <ul style="margin:0;padding-left:20px">
+        <li>Lesson answer right first time <b>+3</b>, after a retry <b>+1</b>, finishing a lesson <b>+10</b></li>
+        <li>Quiz answer <b>+2</b> · Flashcard <b>+1</b></li>
+        <li>Listening or speaking: <b>+3</b> for 85% or better, otherwise <b>+1</b></li>
+      </ul>
     </div>`;
+
+  document.getElementById("goalSelect").onchange = (e) => { state.goal = +e.target.value; save(); renderHome(); updateHud(); };
+  document.getElementById("continueLesson")?.addEventListener("click", () => { vocabUI.mode = "lesson"; vocabUI.topic = "All"; startLesson(next); });
+  document.getElementById("toCards").addEventListener("click", () => { vocabUI.mode = "cards"; vocabUI.queue = null; lesson = null; });
 }
 
 /* ================= Vocabulary ================= */
 
-const vocabUI = { mode: "cards", topic: "All", queue: null, flipped: false, quiz: null, search: "" };
+const vocabUI = { mode: "lesson", topic: "All", queue: null, flipped: false, quiz: null, search: "" };
 const TOPICS = ["All", ...new Set(VOCAB.map((v) => v.topic))];
 
 function cardState(word) {
@@ -276,15 +361,297 @@ function renderVocab() {
     <div class="row" id="vocabControls"></div>
     <div id="vocabBody"></div>`;
   const controls = document.getElementById("vocabControls");
-  controls.appendChild(segmented([["cards", "Flashcards"], ["quiz", "Quiz"], ["list", "Word list"]], vocabUI.mode, (m) => {
+  controls.appendChild(segmented([["lesson", "Lesson"], ["cards", "Flashcards"], ["quiz", "Quiz"], ["list", "Word list"]], vocabUI.mode, (m) => {
     vocabUI.mode = m; vocabUI.queue = null; vocabUI.quiz = null; renderVocab();
   }));
   const sel = document.createElement("select");
   sel.innerHTML = TOPICS.map((t) => `<option ${t === vocabUI.topic ? "selected" : ""}>${t}</option>`).join("");
-  sel.onchange = () => { vocabUI.topic = sel.value; vocabUI.queue = null; vocabUI.quiz = null; renderVocab(); };
+  sel.onchange = () => { vocabUI.topic = sel.value; vocabUI.queue = null; vocabUI.quiz = null; lesson = null; renderVocab(); };
   controls.appendChild(sel);
 
-  ({ cards: renderFlashcards, quiz: renderQuiz, list: renderWordList })[vocabUI.mode]();
+  ({ lesson: renderLesson, cards: renderFlashcards, quiz: renderQuiz, list: renderWordList })[vocabUI.mode]();
+}
+
+/* ---- Lesson: learn 10 words, then two quizzes ----
+   Part 1: each word gets a "learn" card, then a fill-in-the-blank practice.
+   Part 2: 10 questions, Chinese meaning -> type the English word.
+   Part 3: 10 questions, fill in the sentence with no hints.
+   A question must be answered correctly before you can move on. */
+
+const LESSON_SIZE = 10;
+const PARTS = {
+  learn: "Part 1 · Learn the word",
+  practice: "Part 1 · Practise the word",
+  zh: "Part 2 · Chinese → English",
+  sentence: "Part 3 · Fill in the sentence",
+};
+let lesson = null;
+
+// The course: each topic is a unit, split into lessons of 10 words. Lessons unlock in order.
+const COURSE = TOPICS.slice(1).map((topic, u) => {
+  const words = VOCAB.filter((v) => v.topic === topic);
+  const lessons = [];
+  for (let k = 0; k < words.length; k += LESSON_SIZE) {
+    const n = k / LESSON_SIZE + 1;
+    lessons.push({ id: `${topic} ${n}`, unit: u + 1, topic, n, words: words.slice(k, k + LESSON_SIZE) });
+  }
+  return { unit: u + 1, topic, lessons };
+});
+const ALL_LESSONS = COURSE.flatMap((u) => u.lessons);
+const isUnlocked = (l) => { const i = ALL_LESSONS.indexOf(l); return i === 0 || ALL_LESSONS[i - 1].id in state.done; };
+const nextLesson = () => ALL_LESSONS.find((l) => !(l.id in state.done)) || null;
+
+// def = a lesson from the course, or null for a review of your weakest words.
+function startLesson(def) {
+  // Review: words you know least come first; shuffle first so equal ones are random.
+  const words = def ? def.words
+    : shuffle(VOCAB).sort((a, b) => cardState(a.word).box - cardState(b.word).box).slice(0, LESSON_SIZE);
+  lesson = {
+    def,
+    xp: 0,
+    words,
+    steps: [
+      ...words.flatMap((v) => [{ kind: "learn", v }, { kind: "practice", v }]),
+      ...shuffle(words).map((v) => ({ kind: "zh", v })),
+      ...shuffle(words).map((v) => ({ kind: "sentence", v })),
+    ],
+    i: 0,
+    tries: 0,
+    firstTry: { practice: 0, zh: 0, sentence: 0 },
+    mistakes: new Set(),
+  };
+}
+
+// Forgive capitals, extra spaces, end punctuation and UK/US spelling (analyse/analyze, neighbour/neighbor).
+function normAnswer(s) {
+  return s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:]+$/, "")
+    .replace(/ys(e|ed|es|ing)$/, "yz$1").replace(/our(s?)$/, "or$1");
+}
+
+function stepAnswer(step) {
+  const { kind, v } = step;
+  if (kind === "zh") return v.word;
+  return blankAnswer(kind === "practice" ? v.examples[0] : v.examples[1] ?? v.examples[0]);
+}
+
+function renderLesson() {
+  const body = document.getElementById("vocabBody");
+  if (!lesson) return renderPath(body);
+  if (lesson.i >= lesson.steps.length) return renderLessonDone(body);
+
+  const step = lesson.steps[lesson.i];
+  const { kind, v } = step;
+  const partSteps = lesson.steps.filter((s) => (kind === "learn" || kind === "practice" ? s.kind === "learn" : s.kind === kind));
+  const num = partSteps.findIndex((s) => s.v === v) + 1;
+  const header = `
+    <div class="row" style="justify-content:space-between;margin-top:12px">
+      <b>${PARTS[kind]}</b>
+      <span class="row">
+        <span class="muted">${kind === "learn" || kind === "practice" ? "Word" : "Question"} ${num} of ${partSteps.length}</span>
+        <button class="btn" id="quitLesson" title="Quit lesson">✕</button>
+      </span>
+    </div>
+    <div class="progress" style="margin:8px 0"><div style="width:${(lesson.i / lesson.steps.length) * 100}%"></div></div>`;
+
+  if (kind === "learn") {
+    body.innerHTML = header + `
+      <div class="card lesson-word">
+        <div><span class="tag">${esc(v.topic)}</span> <span class="tag">${esc(v.pos)}</span></div>
+        <div class="row" style="margin-top:8px">
+          <span class="word">${esc(v.word)}</span>
+          <button class="btn" id="sayWord">🔊</button>
+        </div>
+        <div class="ipa muted">${esc(v.ipa)}</div>
+        <div class="meanings">
+          <div><span class="label">English</span>${esc(v.meaning)}</div>
+          <div><span class="label">中文</span>${esc(v.zh)}</div>
+        </div>
+        <div class="label" style="margin-top:16px">Examples</div>
+        ${v.examples.map((ex, k) => `
+          <div class="row example-line">
+            <button class="btn" data-ex="${k}">🔊</button>
+            <span>${withBold(ex)}</span>
+          </div>`).join("")}
+      </div>
+      <button class="btn primary big" id="toPractice">Practise this word →</button>`;
+    speak(v.word);
+    document.getElementById("sayWord").onclick = () => speak(v.word);
+    body.querySelectorAll("[data-ex]").forEach((b) => (b.onclick = () => speak(plain(v.examples[+b.dataset.ex]), 0.9)));
+    const next = document.getElementById("toPractice");
+    next.onclick = () => { lesson.i++; renderLesson(); };
+    next.focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+    wireQuit();
+    return;
+  }
+
+  const answer = stepAnswer(step);
+  const sentence = kind === "practice" ? v.examples[0] : v.examples[1] ?? v.examples[0];
+  const question = {
+    practice: `<p class="muted">Fill in the blank with the word you just learned.</p>
+      <p class="q-sentence">${withBlank(sentence)}</p>
+      <p class="muted">💡 ${esc(v.zh)} · ${esc(v.meaning)}</p>`,
+    zh: `<p class="muted">Type the English word for:</p>
+      <p class="q-zh">${esc(v.zh)}</p>
+      <span class="tag">${esc(v.pos)}</span>`,
+    sentence: `<p class="muted">Fill in the missing word.</p>
+      <p class="q-sentence">${withBlank(sentence)}</p>`,
+  }[kind];
+
+  body.innerHTML = header + `
+    <div class="card">
+      ${question}
+      <div class="row" style="margin-top:12px;flex-wrap:nowrap">
+        <input type="text" id="ans" placeholder="Type your answer…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="btn primary" id="checkAns">Check</button>
+      </div>
+      <div id="feedback" style="margin-top:12px"></div>
+    </div>`;
+
+  const input = document.getElementById("ans");
+  const checkBtn = document.getElementById("checkAns");
+  const feedback = document.getElementById("feedback");
+  const lock = (on) => { input.disabled = on; checkBtn.disabled = on; };
+
+  const check = () => {
+    if (!input.value.trim()) return input.focus();
+    lock(true);
+    if (normAnswer(input.value) === normAnswer(answer)) {
+      if (lesson.tries === 0) lesson.firstTry[kind]++;
+      addXP(lesson.tries === 0 ? 3 : 1);
+      feedback.innerHTML = `
+        <div class="score hi">✅ Correct!</div>
+        ${kind === "zh" ? `<p><b>${esc(v.word)}</b> ${esc(v.ipa)}</p>` : `<p>${withBold(sentence)}</p>`}
+        <button class="btn primary big" id="nextStep">Next →</button>`;
+      speak(kind === "zh" ? v.word : plain(sentence));
+      const next = document.getElementById("nextStep");
+      next.onclick = () => { lesson.i++; lesson.tries = 0; renderLesson(); };
+      next.focus();
+      return;
+    }
+    lesson.tries++;
+    lesson.mistakes.add(v.word);
+    // Typed the dictionary word but the sentence needs another form (borrowed, references…).
+    const formHint = kind !== "zh" && normAnswer(input.value) === normAnswer(v.word)
+      ? `<p>👍 Right word — but the sentence needs a different form (e.g. -s, -ed).</p>` : "";
+    feedback.innerHTML = `
+      <div class="score lo">❌ Not quite. Your answer: "${esc(input.value.trim())}"</div>
+      ${formHint}
+      <div class="row">
+        <button class="btn primary big" id="retry">🔁 Try again</button>
+        ${lesson.tries >= 3 ? `<button class="btn" id="reveal">Show answer</button>` : ""}
+      </div>
+      <p id="revealed"></p>`;
+    const retry = document.getElementById("retry");
+    retry.onclick = () => { lock(false); input.value = ""; feedback.innerHTML = ""; input.focus(); };
+    retry.focus();
+    document.getElementById("reveal")?.addEventListener("click", () => {
+      document.getElementById("revealed").innerHTML = `The answer is <b>${esc(answer)}</b>. Now type it yourself.`;
+      speak(answer);
+    });
+  };
+  checkBtn.onclick = check;
+  input.onkeydown = (e) => { if (e.key === "Enter") check(); };
+  input.focus();
+  wireQuit();
+}
+
+function wireQuit() {
+  document.getElementById("quitLesson").onclick = () => {
+    if (confirm("Quit this lesson? Your progress in this lesson will be lost (XP you earned stays).")) {
+      lesson = null;
+      renderVocab();
+    }
+  };
+}
+
+// Duolingo-style path: units with lesson circles; done ✓, current ▶, locked 🔒.
+function renderPath(body) {
+  const units = COURSE.filter((u) => vocabUI.topic === "All" || u.topic === vocabUI.topic);
+  const current = nextLesson();
+  body.innerHTML = units.map((u) => `
+    <div class="unit">
+      <div class="unit-head"><span>Unit ${u.unit}</span><b>${esc(u.topic)}</b>
+        <span class="muted">${u.lessons.filter((l) => l.id in state.done).length}/${u.lessons.length} lessons</span></div>
+      <div class="path">
+        ${u.lessons.map((l, k) => {
+          const done = l.id in state.done, open = isUnlocked(l), cur = l === current;
+          const cls = done ? "done" : cur ? "current" : open ? "" : "locked";
+          return `
+            <div class="node-wrap" style="--shift:${[0, 60, 0, -60][k % 4]}px">
+              <button class="node ${cls}" data-lesson="${esc(l.id)}" ${open ? "" : "disabled"}
+                title="${open ? "" : "Finish the previous lesson to unlock"}">${done ? "✓" : cur ? "▶" : open ? "★" : "🔒"}</button>
+              <div class="node-label">
+                <b>Lesson ${l.n}</b> · ${l.words.length} words
+                ${done ? `<span class="muted"> · best ${state.done[l.id]}%</span>` : ""}
+                <div class="muted node-words">${l.words.slice(0, 4).map((w) => esc(w.word)).join(", ")}…</div>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </div>`).join("") + `
+    <div class="card" style="text-align:center">
+      <b>🔁 Review lesson</b>
+      <p class="muted">10 of your weakest words, same format. Great for days when you have no time for new words.</p>
+      <button class="btn" id="reviewLesson" ${Object.keys(state.cards).length ? "" : "disabled"}>Start review</button>
+    </div>`;
+  body.querySelectorAll("[data-lesson]").forEach((b) => (b.onclick = () => {
+    startLesson(ALL_LESSONS.find((l) => l.id === b.dataset.lesson));
+    renderLesson();
+  }));
+  document.getElementById("reviewLesson").onclick = () => { startLesson(null); renderLesson(); };
+  body.querySelector(".node.current")?.scrollIntoView({ block: "center" });
+}
+
+function renderLessonDone(body) {
+  if (!lesson.saved) {
+    // Words you got right every time move up a box; the rest start again tomorrow.
+    lesson.words.forEach((v) => {
+      const c = cardState(v.word);
+      const box = lesson.mistakes.has(v.word) ? 0 : Math.min(c.box + 2, INTERVALS.length - 1);
+      state.cards[v.word] = { box, due: Date.now() + Math.max(INTERVALS[box], 1) * DAY };
+    });
+    state.stats.lessons++;
+    const n = lesson.words.length;
+    lesson.pct = Math.round(((lesson.firstTry.zh + lesson.firstTry.sentence) / (2 * n)) * 100);
+    if (lesson.def) state.done[lesson.def.id] = Math.max(state.done[lesson.def.id] ?? 0, lesson.pct);
+    lesson.saved = true;
+    addXP(10); // completion bonus
+  }
+  const n = lesson.words.length;
+  const f = lesson.firstTry;
+  const next = nextLesson();
+  const cls = (x) => (x >= n * 0.8 ? "hi" : x >= n * 0.5 ? "mid" : "lo");
+  const review = lesson.words.filter((v) => lesson.mistakes.has(v.word));
+  body.innerHTML = `
+    <div class="card" style="text-align:center">
+      <h2 style="margin-top:0">🎉 ${lesson.def ? `Unit ${lesson.def.unit} · Lesson ${lesson.def.n}` : "Review"} complete!</h2>
+      <div class="row" style="justify-content:center;gap:24px;margin:8px 0 16px">
+        <div><div class="score hi">+${lesson.xp} XP</div><span class="muted">this lesson</span></div>
+        <div><div class="score">${todayXP()}/${state.goal}</div><span class="muted">${todayXP() >= state.goal ? "daily goal ✅" : "daily goal"}</span></div>
+        <div><div class="score">🔥 ${streak()}</div><span class="muted">day streak</span></div>
+      </div>
+      <p class="muted">Correct on the first try:</p>
+      <div class="grid">
+        <div><div class="score ${cls(f.practice)}">${f.practice}/${n}</div>Practice</div>
+        <div><div class="score ${cls(f.zh)}">${f.zh}/${n}</div>Chinese → English</div>
+        <div><div class="score ${cls(f.sentence)}">${f.sentence}/${n}</div>Fill in the sentence</div>
+      </div>
+    </div>
+    ${review.length ? `
+      <h2>Words to review</h2>
+      ${review.map((v) => `
+        <div class="card" style="padding:14px">
+          <b>${esc(v.word)}</b> <span class="muted">${esc(v.ipa)}</span> — ${esc(v.zh)}<br>
+          <span class="muted">${esc(v.meaning)}</span>
+        </div>`).join("")}
+      <p class="muted">These words will come back in your flashcards tomorrow.</p>` : `<p style="text-align:center">Perfect — no mistakes! 🌟</p>`}
+    <div class="row" style="justify-content:center">
+      <button class="btn big" id="toPath">Back to path</button>
+      ${next ? `<button class="btn primary big" id="newLesson">Next: Unit ${next.unit} · Lesson ${next.n} →</button>` : ""}
+    </div>`;
+  document.getElementById("toPath").onclick = () => { lesson = null; renderLesson(); };
+  document.getElementById("newLesson")?.addEventListener("click", () => { startLesson(next); renderLesson(); });
 }
 
 function renderFlashcards() {
@@ -316,7 +683,7 @@ function renderFlashcards() {
       ${vocabUI.flipped ? `
         <div class="zh">${esc(v.zh)}</div>
         <div>${esc(v.meaning)}</div>
-        <div class="example">"${esc(v.example)}"</div>
+        <div class="example">"${esc(plain(v.examples[0]))}"</div>
       ` : `<p class="muted">Do you know this word? Tap the card to see the meaning.</p>`}
     </div>
     <div class="row" style="justify-content:center">
@@ -335,7 +702,7 @@ function renderFlashcards() {
   document.getElementById("flash").onclick = flip;
   document.getElementById("flip")?.addEventListener("click", flip);
   document.getElementById("sayWord").onclick = () => speak(v.word);
-  document.getElementById("sayEx")?.addEventListener("click", () => speak(v.example, 0.9));
+  document.getElementById("sayEx")?.addEventListener("click", () => speak(plain(v.examples[0]), 0.9));
   body.querySelectorAll("[data-grade]").forEach((b) => (b.onclick = () => grade(v, +b.dataset.grade)));
 }
 
@@ -344,7 +711,7 @@ function grade(v, g) {
   const box = g === 0 ? 0 : Math.min(c.box + g, INTERVALS.length - 1);
   state.cards[v.word] = { box, due: Date.now() + INTERVALS[box] * DAY };
   state.stats.reviews++;
-  markActive();
+  addXP(1);
   vocabUI.queue.shift();
   if (g === 0) vocabUI.queue.splice(Math.min(3, vocabUI.queue.length), 0, v); // see it again soon
   vocabUI.flipped = false;
@@ -399,8 +766,7 @@ function renderQuiz() {
       const correct = chosen === v;
       if (correct) q.right++;
       state.stats.quiz++;
-      if (correct) state.stats.quizRight++;
-      markActive();
+      if (correct) { state.stats.quizRight++; addXP(2); } else markActive();
       body.querySelectorAll(".choice").forEach((x) => {
         if (q.options[+x.dataset.k] === v) x.classList.add("right");
       });
@@ -408,7 +774,7 @@ function renderQuiz() {
       document.getElementById("quizFeedback").innerHTML = `
         <div class="card">
           <b>${esc(v.word)}</b> <span class="muted">${esc(v.ipa)}</span> — ${esc(v.zh)}<br>
-          <i>"${esc(v.example)}"</i>
+          <i>"${esc(plain(v.examples[0]))}"</i>
         </div>
         <button class="btn primary" id="nextQ">Next →</button>`;
       document.getElementById("nextQ").onclick = () => {
@@ -442,7 +808,7 @@ function renderWordList() {
             </div>
           </div>
           <div>${esc(v.zh)} — ${esc(v.meaning)}</div>
-          <div class="muted"><i>${esc(v.example)}</i></div>
+          ${v.examples.map((ex) => `<div class="muted"><i>${esc(plain(ex))}</i></div>`).join("")}
         </div>`;
     }).join("") || `<p class="muted">No words found.</p>`;
     document.querySelectorAll("[data-say]").forEach((b) => (b.onclick = () => speak(b.dataset.say)));
@@ -507,7 +873,7 @@ function renderDictation() {
     const d = diffWords(item.text, answer.value);
     document.getElementById("result").innerHTML = diffHTML(d) + `<p><b>Answer:</b> ${esc(item.text)}</p>`;
     state.stats.listen++;
-    markActive();
+    addXP(d.score >= 85 ? 3 : 1);
   };
   document.getElementById("check").onclick = check;
   answer.onkeydown = (e) => { if (e.key === "Enter") check(); };
@@ -542,7 +908,7 @@ function renderListenPairs() {
       const ok = b.dataset.w === target;
       listenUI.pairScore = [right + (ok ? 1 : 0), total + 1];
       state.stats.listen++;
-      markActive();
+      if (ok) addXP(1); else markActive();
       body.querySelectorAll(".pair").forEach((x) => x.dataset.w === target && x.classList.add("right"));
       if (!ok) b.classList.add("wrong");
       document.getElementById("pairResult").innerHTML = `
@@ -618,7 +984,7 @@ function renderReadAloud(body) {
         const best = alts.map((a) => ({ a, d: diffWords(item.text, a) })).sort((x, y) => y.d.score - x.d.score)[0];
         result.innerHTML = `<p class="muted">I heard: "${esc(best.a)}"</p>` + diffHTML(best.d);
         state.stats.speak++;
-        markActive();
+        addXP(best.d.score >= 85 ? 3 : 1);
       },
       onError: (msg) => {
         mic.classList.remove("rec"); mic.textContent = "🎤 Speak";
@@ -663,7 +1029,7 @@ function renderSpeakPairs(body) {
         else html = `<div class="score mid">🤔 I heard "${esc(alts[0])}". Try again.</div>`;
         result.innerHTML = html;
         state.stats.speak++;
-        markActive();
+        if (html.includes("Clear!")) addXP(2); else markActive();
       },
       onError: (msg) => {
         mic.classList.remove("rec"); mic.textContent = "🎤 Speak";

@@ -57,6 +57,16 @@ button, select, input { font: inherit; color: inherit; }
 }
 .tabs a.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
 
+.hud { margin-left: auto; display: flex; gap: 12px; font-weight: 700; white-space: nowrap; }
+.hud #hudXP.met { color: var(--good); }
+#toast {
+  position: fixed; left: 50%; bottom: 24px; z-index: 20;
+  transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+  padding: 10px 18px; border-radius: 999px; font-weight: 700;
+  background: var(--text); color: var(--bg); transition: .25s;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+
 main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
 .foot {
   max-width: 820px; margin: 0 auto; padding: 16px;
@@ -128,10 +138,62 @@ select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); ba
 .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
 .progress > div { height: 100%; background: var(--primary); transition: width .3s; }
 
+/* ---- Lesson ---- */
+.lesson-word .word { font-size: 2.2rem; font-weight: 700; }
+.meanings { display: grid; gap: 8px; margin-top: 12px; }
+.meanings > div, .example-line { padding: 10px 12px; border-radius: 10px; background: var(--bg); }
+.example-line { flex-wrap: nowrap; margin-top: 8px; }
+.example-line b, .q-sentence b { color: var(--primary); }
+.label { display: inline-block; min-width: 64px; margin-right: 8px; font-size: .78rem; font-weight: 700; text-transform: uppercase; color: var(--muted); }
+.q-sentence { font-size: 1.3rem; }
+.q-zh { font-size: 2rem; font-weight: 700; margin: 8px 0; }
+.blank { display: inline-block; min-width: 90px; border-bottom: 3px solid var(--primary); margin: 0 4px; }
+input:disabled { opacity: .7; }
+
+/* ---- Daily goal ---- */
+.goal-bar {
+  position: relative; height: 22px; margin: 12px 0;
+  background: var(--line); border-radius: 99px; overflow: hidden;
+}
+.goal-bar > div { height: 100%; background: linear-gradient(90deg, #f59f00, #fab005); transition: width .4s; }
+.goal-bar span { position: absolute; inset: 0; text-align: center; font-size: .8rem; font-weight: 700; line-height: 22px; }
+.week { display: flex; justify-content: space-between; text-align: center; font-size: .8rem; color: var(--muted); }
+.day.today { color: var(--text); font-weight: 700; }
+.dot {
+  width: 30px; height: 30px; margin: 0 auto 4px; border-radius: 50%;
+  border: 2px solid var(--line); display: grid; place-items: center; color: #fff; font-weight: 700;
+}
+.dot.half { background: linear-gradient(0deg, #f59f00 50%, transparent 50%); border-color: #f59f00; }
+.dot.full { background: #f59f00; border-color: #f59f00; }
+.continue { border: 2px solid var(--primary); }
+
+/* ---- Lesson path ---- */
+.unit { margin-top: 16px; }
+.unit-head {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  padding: 14px 18px; border-radius: var(--radius); background: var(--primary); color: #fff;
+}
+.unit-head .muted { color: rgba(255, 255, 255, .8); margin-left: auto; }
+.path { padding: 16px 0; overflow-x: clip; }
+.node-wrap { display: flex; align-items: center; gap: 16px; margin: 14px 0; transform: translateX(var(--shift)); padding-left: 30%; }
+.node {
+  flex: none; width: 68px; height: 68px; border-radius: 50%; border: 0; cursor: pointer;
+  font-size: 1.5rem; font-weight: 800; color: #fff; background: var(--primary);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, .2);
+}
+.node:active { transform: translateY(3px); box-shadow: 0 3px 0 rgba(0, 0, 0, .2); }
+.node.done { background: #f59f00; }
+.node.current { background: var(--good); animation: bounce 1.4s infinite; }
+.node.locked { background: var(--line); color: var(--muted); cursor: not-allowed; box-shadow: none; }
+.node-words { font-size: .85rem; }
+@keyframes bounce { 50% { transform: translateY(-5px); } }
+
 .pair { font-size: 1.6rem; font-weight: 700; }
 .notice { padding: 12px 14px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); }
 
 @media (max-width: 520px) {
   .flash .word { font-size: 1.8rem; }
   .btn.big { width: 100%; }
+  .node-wrap { padding-left: 8%; transform: translateX(calc(var(--shift) / 3)); }
+  .hud { gap: 8px; font-size: .9rem; }
 }
