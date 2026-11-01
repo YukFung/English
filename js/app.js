@@ -441,13 +441,13 @@ function renderLesson() {
 
   const step = lesson.steps[lesson.i];
   const { kind, v } = step;
-  const partSteps = lesson.steps.filter((s) => (kind === "learn" || kind === "practice" ? s.kind === "learn" : s.kind === kind));
+  const partSteps = lesson.steps.filter((s) => !s.again && (kind === "learn" || kind === "practice" ? s.kind === "learn" : s.kind === kind));
   const num = partSteps.findIndex((s) => s.v === v) + 1;
   const header = `
     <div class="row" style="justify-content:space-between;margin-top:12px">
       <b>${PARTS[kind]}</b>
       <span class="row">
-        <span class="muted">${kind === "learn" || kind === "practice" ? "Word" : "Question"} ${num} of ${partSteps.length}</span>
+        <span class="muted">${step.again ? "🔁 Once more" : `${kind === "learn" || kind === "practice" ? "Word" : "Question"} ${num} of ${partSteps.length}`}</span>
         <button class="btn" id="quitLesson" title="Quit lesson">✕</button>
       </span>
     </div>
@@ -505,13 +505,48 @@ function renderLesson() {
         <input type="text" id="ans" placeholder="Type your answer…" autocomplete="off" autocapitalize="off" spellcheck="false">
         <button class="btn primary" id="checkAns">Check</button>
       </div>
+      <button class="btn" id="forgot" style="margin-top:8px">🤔 I forgot 唔記得</button>
       <div id="feedback" style="margin-top:12px"></div>
     </div>`;
 
   const input = document.getElementById("ans");
   const checkBtn = document.getElementById("checkAns");
+  const forgotBtn = document.getElementById("forgot");
   const feedback = document.getElementById("feedback");
-  const lock = (on) => { input.disabled = on; checkBtn.disabled = on; };
+  const lock = (on) => { input.disabled = on; checkBtn.disabled = on; forgotBtn.disabled = on; };
+
+  // "I forgot": show the full word card right away, then answer again.
+  // The word is also asked once more at the end of this part.
+  forgotBtn.onclick = () => {
+    lock(true);
+    lesson.tries++;
+    lesson.mistakes.add(v.word);
+    const part = kind === "practice" ? ["learn", "practice"] : [kind];
+    const lastInPart = lesson.steps.reduce((last, s, k) => (part.includes(s.kind) ? k : last), lesson.i);
+    const alreadyAgain = lesson.steps.some((s, k) => k > lesson.i && s.kind === kind && s.v === v);
+    if (!alreadyAgain) lesson.steps.splice(lastInPart + 1, 0, { kind, v, again: true });
+    feedback.innerHTML = `
+      <div class="card revise">
+        <div class="muted">📖 Revise this word</div>
+        <div class="row" style="margin-top:4px">
+          <span class="word">${esc(v.word)}</span>
+          <span class="muted">${esc(v.ipa)} · ${esc(v.pos)}</span>
+          <button class="btn" id="sayForgot">🔊</button>
+        </div>
+        <div class="meanings">
+          <div><span class="label">English</span>${esc(v.meaning)}</div>
+          <div><span class="label">中文</span>${esc(v.zh)}</div>
+        </div>
+        ${v.examples.map((ex) => `<div class="example-line">${withBold(ex)}</div>`).join("")}
+        <p class="muted" style="margin-bottom:0">This word will come back once more at the end of this part.</p>
+      </div>
+      <button class="btn primary big" id="gotIt">👍 Got it — let me answer</button>`;
+    speak(v.word);
+    document.getElementById("sayForgot").onclick = () => speak(v.word);
+    const gotIt = document.getElementById("gotIt");
+    gotIt.onclick = () => { lock(false); input.value = ""; feedback.innerHTML = ""; input.focus(); };
+    gotIt.focus();
+  };
 
   const check = () => {
     if (!input.value.trim()) return input.focus();

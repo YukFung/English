@@ -146,6 +146,8 @@ select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); ba
 .example-line b, .q-sentence b { color: var(--primary); }
 .label { display: inline-block; min-width: 64px; margin-right: 8px; font-size: .78rem; font-weight: 700; text-transform: uppercase; color: var(--muted); }
 .q-sentence { font-size: 1.3rem; }
+.revise { margin-top: 0; border-color: var(--primary); }
+.revise .word { font-size: 1.8rem; font-weight: 700; }
 .q-zh { font-size: 2rem; font-weight: 700; margin: 8px 0; }
 .blank { display: inline-block; min-width: 90px; border-bottom: 3px solid var(--primary); margin: 0 4px; }
 input:disabled { opacity: .7; }
